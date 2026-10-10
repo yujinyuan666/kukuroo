@@ -12,6 +12,7 @@ export default {
     if (hit !== null) return hit;
 
     const url = new URL(request.url);
+    //直接在cf里面订阅github的时候，要加一个重定向，否则会报错
     if (url.pathname === "/" || url.pathname === "") {
       return Response.redirect(url.origin + "/enroll", 302);
     }
