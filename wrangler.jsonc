@@ -3,6 +3,13 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-10",
   "workers_dev": true,
+
+  "routes": [
+    {
+      "pattern": "my-push.yujinyuan.top",
+      "custom_domain": true
+    }
+  ],
   // 非敏感变量直接写在这里
   "vars": {
     "KUKUROO_NAVIGATE_ORIGIN": "https://my-push.yujinyuan.top"
