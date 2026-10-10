@@ -3,11 +3,11 @@
   "main": "src/worker.ts",
   "compatibility_date": "2026-10-10",
   "workers_dev": true,
-
-  "routes": [
+  //用优选ip，就要用routes
+ "routes": [
     {
-      "pattern": "my-push.yujinyuan.top",
-      "custom_domain": true
+      "pattern": "my-push.yujinyuan.top/*",
+      "zone_name": "yujinyuan.top"
     }
   ],
   // 非敏感变量直接写在这里
