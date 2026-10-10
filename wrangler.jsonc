@@ -1,6 +1,6 @@
 {
   "name": "my-push",
-  "main": "src/index.ts",
+  "main": "src/worker.ts",
   "compatibility_date": "2026-10-10",
   "workers_dev": true,
 
