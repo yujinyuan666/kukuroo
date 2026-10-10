@@ -10,7 +10,6 @@
       "custom_domain": true
     }
   ],
-
   // 非敏感变量直接写在这里
   "vars": {
     "KUKUROO_NAVIGATE_ORIGIN": "https://my-push.yujinyuan.top"
