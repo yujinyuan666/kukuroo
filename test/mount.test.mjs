@@ -94,6 +94,121 @@ ok("the subscription landed in KV", kv.store.size === 1);
 ok("send without a bearer token is 401",
   (await kukuroo.handle(req("/push/send", { method: "POST", body: "{}" }), env)).status === 401);
 
+// ---- named send tokens ------------------------------------------------------
+// Authorization is decided before the body is read, so a deliberately
+// unparseable body is a complete probe of the gate: 400 means the credential
+// was accepted and the request went on to be refused for its body, and 401
+// means it never got that far. Nothing here reaches a push service, which
+// matters because the fan-out below counts on `pushed` being empty until it
+// runs and asserts the count once.
+const namedEnv = {
+  ...env,
+  KUKUROO_SEND_TOKEN_CI: "ci-secret",
+  KUKUROO_SEND_TOKEN_MAC_MINI: "mac-secret",
+};
+const probe = async (authorization, against = namedEnv) => {
+  const headers = authorization === null ? {} : { authorization: `Bearer ${authorization}` };
+  const response = await kukuroo.handle(req("/push/send", { method: "POST", headers, body: "not json" }), against);
+  return { status: response.status, body: await response.json() };
+};
+// 400 is this file's proof of "past the gate", so assert the pair rather than
+// the status alone: a 400 for some other reason would otherwise read as a pass.
+const authorized = ({ status, body }, label) =>
+  ok(label, status === 400 && body.error === "body must be JSON");
+
+authorized(await probe("ci.ci-secret"), "a named token is accepted as name.secret");
+authorized(await probe("CI.ci-secret"), "the name in a credential is case-insensitive");
+authorized(await probe("mac-mini.mac-secret"), "a dashed name maps to underscores in the variable");
+authorized(await probe("token-token-token"), "the unnamed token still works beside named ones");
+authorized(await probe("ci.a.b.c", { ...env, KUKUROO_SEND_TOKEN_CI: "a.b.c" }),
+  "only the first dot splits, so a secret may contain one");
+
+// A name whose secret is missing is 401 and says nothing: naming the variable
+// would let an anonymous caller enumerate the tokens this Worker holds.
+{
+  const before = errors.length;
+  const missed = await probe("nope.ci-secret");
+  ok("an unknown name is 401, not a 503 naming it",
+    missed.status === 401 && missed.body.error === "unauthorized");
+  ok("and that miss logs nothing", errors.length === before);
+}
+ok("a wrong secret for a real name is 401",
+  (await probe("ci.wrong-secret")).status === 401);
+ok("an empty secret matches nothing", (await probe("ci.")).status === 401);
+// `__proto__` is a legal credential only as a whole value; as a name it must not
+// become a property key, or the lookup would read an object off the prototype.
+ok("a name that is not in the charset is treated as a whole value",
+  (await probe("__proto__.token-token-token")).status === 401);
+
+// Names that *are* in the charset but also name members of Object.prototype.
+// They must resolve to the derived binding, never to the inherited property --
+// `env.constructor` is a function, and a lookup that reached it would compare a
+// secret against the Function constructor.
+{
+  authorized(await probe("constructor.s", { ...env, KUKUROO_SEND_TOKEN_CONSTRUCTOR: "s" }),
+    "a name that shadows an Object member reads its own secret");
+  authorized(await probe("toString.s", { ...env, KUKUROO_SEND_TOKEN_TOSTRING: "s" }),
+    "toString is an ordinary name too");
+  ok("and the inherited property is not what was compared",
+    (await probe("constructor.Function", { ...env, KUKUROO_SEND_TOKEN_CONSTRUCTOR: "s" })).status === 401);
+}
+// The mirror image, and the one `Object.hasOwn` in `namedSendToken` exists for:
+// a *binding-shaped* key inherited from Object.prototype. `env` is a plain
+// object in workerd -- verified on a real `wrangler dev`, where every binding is
+// an own property and the prototype is Object.prototype -- so a chain-walking
+// read would hand back whatever a pollutant put there and accept a credential
+// nobody issued. Only reachable if something else in the isolate pollutes, which
+// nothing here does; the guard is what keeps that a neighbour's bug.
+{
+  const poisoned = "polluted-secret";
+  Object.prototype.KUKUROO_SEND_TOKEN_PWN = poisoned;
+  try {
+    ok("a polluted prototype does not authorize its own name",
+      (await probe("pwn." + poisoned)).status === 401);
+    // ...and the pollution is genuinely reachable by a plain read, so the test
+    // above is asserting the guard rather than an unreachable branch.
+    // eslint-disable-next-line no-proto
+    ok("the polluted value really is inherited, so the guard is load-bearing",
+      env.KUKUROO_SEND_TOKEN_PWN === poisoned && !Object.hasOwn(env, "KUKUROO_SEND_TOKEN_PWN"));
+  } finally {
+    delete Object.prototype.KUKUROO_SEND_TOKEN_PWN;
+  }
+  authorized(await probe("ci.ci-secret"), "and a real token still works after that");
+}
+// The derivation is injective, or two names would reach one secret and a
+// retired token would still be live under a name nobody set.
+{
+  const both = { ...env, KUKUROO_SEND_TOKEN_A_B: "dashed", KUKUROO_SEND_TOKEN_AB: "plain" };
+  authorized(await probe("a-b.dashed", both), "a-b does not reach the variable of ab");
+  authorized(await probe("ab.plain", both), "ab does not reach the variable of a-b");
+}
+
+// Named tokens stand on their own: a Worker with no unnamed token serves them.
+{
+  const { KUKUROO_SEND_TOKEN: _omitted, ...namedOnly } = namedEnv;
+  authorized(await probe("ci.ci-secret", namedOnly), "named tokens work with no unnamed token set");
+  const before = errors.length;
+  const missed = await probe("nope.ci-secret", namedOnly);
+  ok("a named miss is still 401 with no unnamed token to name",
+    missed.status === 401 && errors.length === before);
+  // The unnamed form keeps the 503 that names the variable -- the one shape
+  // where there is exactly one binding the caller could have meant.
+  const bare = await kukuroo.handle(req("/push/send", { method: "POST", body: "not json" }), namedOnly);
+  const bareBody = await bare.json();
+  ok("an unnamed credential with no unnamed token still 503s, naming it",
+    bare.status === 503 && bareBody.error.includes("KUKUROO_SEND_TOKEN"));
+}
+
+// A token issued before named tokens existed is matched as a whole value, even
+// when its own text contains a dot whose prefix is a legal name. Tokens are
+// random in practice; a hand-written one must not change meaning here.
+{
+  const dotted = { ...env, KUKUROO_SEND_TOKEN: "abc.def" };
+  authorized(await probe("abc.def", dotted), "a dotted unnamed token still matches whole");
+  ok("and the whole-value clause is not a wildcard",
+    (await probe("abc.wrong", dotted)).status === 401);
+}
+
 // ---- the fan-out, push service stubbed -------------------------------------
 const pushed = [];
 globalThis.fetch = async (url, init) => { pushed.push({ url, init }); return new Response(null, { status: 201 }); };
@@ -110,6 +225,15 @@ ok("the push POST carries VAPID auth and aes128gcm",
 const vapidRawPub = b64url(new Uint8Array(await crypto.subtle.exportKey("raw", vapidPair.publicKey)));
 ok("the k= parameter is the sender's uncompressed public key",
   pushed[0].init.headers.Authorization.endsWith(`k=${vapidRawPub}`));
+
+// The named path is the same send, not a second one: a named token that
+// authorized but did not fan out would satisfy every probe above.
+const namedSend = await kukuroo.handle(req("/push/send", {
+  method: "POST",
+  headers: { authorization: "Bearer ci.ci-secret" },
+  body: JSON.stringify({ notification: { title: "hi", navigate: "https://push.example.com/" } }),
+}), namedEnv);
+ok("a named token sends for real", (await namedSend.json()).delivered === 1 && pushed.length === 2);
 
 const badSubject = await kukuroo.handle(req("/push/send", {
   method: "POST",

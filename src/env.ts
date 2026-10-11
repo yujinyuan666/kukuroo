@@ -30,8 +30,30 @@ export interface KukurooEnv {
    */
   KUKUROO_VAPID_PUBLIC?: string;
 
-  /** Worker Secret. Bearer token for `POST /push/send`. */
-  KUKUROO_SEND_TOKEN: string;
+  /**
+   * Worker Secret. The unnamed bearer token for `POST /push/send`, sent as
+   * `Authorization: Bearer <token>`.
+   *
+   * Optional, because a deployment may use named tokens instead -- and only
+   * named ones. Adding it back to a Worker that has only named tokens is the
+   * only way to make a bare, unnamed credential work there.
+   */
+  KUKUROO_SEND_TOKEN?: string;
+
+  /**
+   * Worker Secrets. Any number of further send tokens, one per name, where the
+   * credential is `Authorization: Bearer <name>.<secret>`: the name `ci` reads
+   * the secret `KUKUROO_SEND_TOKEN_CI`, and `mac-mini` reads
+   * `KUKUROO_SEND_TOKEN_MAC_MINI`.
+   *
+   * They cannot be listed here the way the fixed bindings are, because the list
+   * is whatever the operator created with `wrangler secret put`. A name is one
+   * to 32 characters of `a-z`, `0-9` and interior `-`, matched without regard
+   * to case, and a name with no secret of its own answers 401 rather than the
+   * 503 above: naming the missing variable would report which names exist to
+   * whoever asks.
+   */
+  // KUKUROO_SEND_TOKEN_<NAME>: string;
 
   /** Worker Secret. Gate on `POST /push/subscribe`. */
   KUKUROO_INVITE_CODE: string;

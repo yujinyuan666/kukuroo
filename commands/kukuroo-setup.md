@@ -36,6 +36,10 @@ Both are in `kukuroo.credentials.json` on the machine the deployment was set up 
 the address is the custom domain in its `wrangler.jsonc` or the `workers.dev` URL the deploy printed.
 Say that once if they do not have the values to hand.
 
+That file holds the unnamed token. A deployment may also have named ones, each its own Worker Secret
+and never in that file: those are sent as `<name>.<token>`, so the value to paste is still one string
+and nothing above changes. If they have only a named token, it works with no unnamed token set.
+
 If they have not deployed a Worker at all yet, `npx kukuroo init my-push` is the whole of setup. Say
 that and stop, rather than walking them through it here.
 
@@ -72,5 +76,6 @@ Read the response rather than the exit code:
   enrollment, not config: open the origin in Safari on the phone, Add to Home Screen, open it **from
   the icon**, and allow notifications. A Safari tab cannot subscribe on iOS.
 - `401` — the token is wrong, or has been rotated on the machine that holds the credentials file.
-  Nothing gets stored; ask for the current one.
+  Nothing gets stored; ask for the current one. A named token whose name has no secret on the Worker
+  answers the same way, so ask for the whole value again rather than trying to repair one half of it.
 - Connection refused or a 404 HTML page — the origin is wrong, or the Worker is not deployed there.

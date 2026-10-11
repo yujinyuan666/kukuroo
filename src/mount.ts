@@ -132,6 +132,99 @@ function bearerToken(request: Request): string | null {
 }
 
 /**
+ * Send tokens, named and unnamed.
+ *
+ * One token is one credential, and a credential shared by everything that sends
+ * is a credential that cannot be retired from one place without retiring it
+ * from all of them. So a deployment may hold any number of tokens, each in its
+ * own Worker Secret: `KUKUROO_SEND_TOKEN` is the unnamed one, and
+ * `KUKUROO_SEND_TOKEN_<NAME>` a named one, with the name upper-cased and its
+ * dashes turned into underscores.
+ *
+ * The name travels in the credential itself, as `name.secret`, which keeps a
+ * sender's config a single opaque string. The alternative -- a second header,
+ * or the name in a path segment -- makes every caller hold two values that
+ * have to agree, and makes every credential already cached a migration.
+ */
+
+/** The unnamed token, and the prefix every named one is derived from. */
+const SEND_TOKEN_VAR = "KUKUROO_SEND_TOKEN";
+
+/**
+ * The name charset. This is ours rather than Cloudflare's: nothing in the
+ * secret docs promises a syntax rule for a secret's name, so the only set safe
+ * to accept here is the one stated. It is also what makes the derivation below
+ * injective, which is what stops two names from reaching one secret.
+ *
+ * One to 32 characters, alphanumeric at both ends, dashes allowed inside.
+ */
+const TOKEN_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+
+interface SendCredential {
+  /** Which token family the credential claims, or null for the unnamed form. */
+  name: string | null;
+  /** What a named lookup compares, or the whole credential when unnamed. */
+  secret: string | null;
+  /** The header value verbatim, which is what the unnamed token is matched against. */
+  raw: string | null;
+}
+
+/**
+ * Split `name.secret` at the first dot, and only at the first: a secret is
+ * arbitrary bytes and may well contain one.
+ *
+ * A prefix that is not a legal name makes the whole header the secret, which is
+ * what keeps every token issued before this existed working. Real tokens are
+ * random, but a hand-written one like `my_token.v2` must not stop working
+ * because its prefix looks like a name it never claimed to be.
+ */
+function parseSendCredential(token: string | null): SendCredential {
+  if (token === null) return { name: null, secret: null, raw: null };
+
+  const dot = token.indexOf(".");
+  if (dot > 0) {
+    const name = token.slice(0, dot).toLowerCase();
+    if (TOKEN_NAME_RE.test(name)) return { name, secret: token.slice(dot + 1), raw: token };
+  }
+
+  return { name: null, secret: token, raw: token };
+}
+
+/** `ci` is `KUKUROO_SEND_TOKEN_CI`; `mac-mini` is `KUKUROO_SEND_TOKEN_MAC_MINI`. */
+function tokenEnvVar(name: string): string {
+  return `${SEND_TOKEN_VAR}_${name.toUpperCase().replaceAll("-", "_")}`;
+}
+
+/**
+ * The one dynamic read of `env`, and the cast is the point.
+ *
+ * A name never becomes a property key on its own. It goes through the regex
+ * above and then through `tokenEnvVar`, so what is looked up always begins with
+ * `KUKUROO_SEND_TOKEN_`: `__proto__` asks for `KUKUROO_SEND_TOKEN___PROTO__`, a
+ * binding nobody can create, rather than reaching a prototype.
+ *
+ * `Object.hasOwn` rather than a plain read, because that argument covers the
+ * name reaching a prototype and not the reverse: if anything sharing this
+ * isolate ever sets `Object.prototype.KUKUROO_SEND_TOKEN_PWN`, a chain-walking
+ * read would accept `pwn.<that value>` as a real token. Nothing in this package
+ * can populate that key, so this is defence against a neighbour rather than a
+ * live fault -- but the read is the only thing that would have to be wrong for
+ * it to matter, so it costs one call to not have to trust the neighbours.
+ *
+ * An index signature on `KukurooEnv` would avoid this cast and cost the
+ * interface the thing it exists for. Hosts extend it so that a missing binding
+ * is a build error; with an index signature, every typo in their own `Env`
+ * would typecheck as `unknown` and fail at runtime instead.
+ */
+function namedSendToken(env: KukurooEnv, name: string): string | undefined {
+  const key = tokenEnvVar(name);
+  if (!Object.hasOwn(env, key)) return undefined;
+
+  const value = (env as unknown as Record<string, unknown>)[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
  * CORS is operator policy from the environment, like the navigate origin.
  * Unset, no CORS header is ever emitted and cross-origin browser calls fail,
  * which is the right default for a deployment that serves its own enrollment.
@@ -412,11 +505,57 @@ async function handleSubscribe(
 }
 
 async function handleSend(request: Request, env: KukurooEnv): Promise<Response> {
-  const expected = requireSecret(env.KUKUROO_SEND_TOKEN, "KUKUROO_SEND_TOKEN");
-  if (expected instanceof Response) return expected;
+  const credential = parseSendCredential(bearerToken(request));
 
-  const token = bearerToken(request);
-  if (token === null || !secretEquals(token, expected)) {
+  // Two comparisons, either of which admits the sender. The second is not a
+  // fallback for the first: it matches the header verbatim against the unnamed
+  // token, which is what lets a token issued before named tokens existed keep
+  // working untouched -- including one whose own text contains a dot, and so
+  // parses as a name it never claimed to be.
+  const named = credential.name === null ? undefined : namedSendToken(env, credential.name);
+  const byName =
+    named !== undefined && credential.secret !== null && secretEquals(credential.secret, named);
+  const byDefault =
+    typeof env.KUKUROO_SEND_TOKEN === "string" &&
+    env.KUKUROO_SEND_TOKEN.length > 0 &&
+    credential.raw !== null &&
+    secretEquals(credential.raw, env.KUKUROO_SEND_TOKEN);
+
+  if (!byName && !byDefault) {
+    // The 503 that names the missing variable survives only for the unnamed
+    // credential, where there is exactly one binding it could have meant and
+    // saying so tells the caller nothing it did not send. A name is chosen by
+    // the caller, so answering "KUKUROO_SEND_TOKEN_NOPE is not configured"
+    // would let an unauthenticated caller enumerate the tokens this Worker
+    // holds one guess at a time. Named misses are 401 whether the name exists
+    // on this Worker or not.
+    //
+    // The miss is also not logged, for the same reason.
+    //
+    // A timing difference survives here and is worth stating exactly, because
+    // it is smaller than it looks and larger than "negligible". `secretEquals`
+    // is reached only when a name resolved, so an existing name runs one
+    // comparison an absent one does not, and that comparison returns early
+    // unless the guess is the right length. Alternating exists/absent samples
+    // to cancel drift does resolve it -- an interleaved probe puts the
+    // correct-length case 1.4-2.9% slower and a one-short control at 1.000 --
+    // so the length of an existing name's secret, and only its length, is
+    // recoverable in principle. A single unpaired sample does not see it
+    // (167ns median against a 1042ns spread, measured), and in a real Worker
+    // request the absolute difference is tens of nanoseconds against
+    // milliseconds of other work.
+    //
+    // Not closed, deliberately. The obvious remedy -- always compare against
+    // something of the caller's length -- does not remove the signal, it moves
+    // it into the dummy's own length check, and pays a real comparison on every
+    // authenticated request to hide a sub-0.01% effect from someone who has
+    // already guessed a valid name. The leak that matters, "which names exist",
+    // is answered by the status code not at all: it is 401 for every named miss
+    // whether the name is real or not.
+    if (credential.name === null) {
+      const expected = requireSecret(env.KUKUROO_SEND_TOKEN, SEND_TOKEN_VAR);
+      if (expected instanceof Response) return expected;
+    }
     return json({ error: "unauthorized" }, 401);
   }
 

@@ -47,6 +47,11 @@ KUKUROO_SEND_TOKEN=...
 - **Nothing in `kukuroo init` writes it.** Sending from a phone-notification skill is a
   nice-to-have on top of a push service, and it does not get to add steps, flags, or files to
   everybody's setup to make its own life easier.
+- **The token may be a named one, and that changes nothing here.** A deployment can hold
+  several send tokens, one per sender, written as `<name>.<token>`; a plain token is still a
+  plain token. Either way the value is one opaque string in one variable, so the file, the
+  question, and the shell below are unaffected — and a 401 means the same thing for both,
+  that this machine's copy is stale.
 
 Being shell-sourceable is the whole design. The agent writes `$KUKUROO_SEND_TOKEN` and
 never learns its value:
@@ -159,7 +164,7 @@ path. The [API section of the README](../README.md#api) is the same contract for
 | What you see | What it is |
 |---|---|
 | `"delivered":0` | Nothing enrolled. Open the origin in Safari on the phone, Add to Home Screen, open it **from the icon**, allow notifications. A Safari tab cannot subscribe on iOS. |
-| `401 unauthorized` | The cached token is stale, usually rotated on the machine holding the credentials file. The agent asks for the current one and overwrites the cache. |
+| `401 unauthorized` | The cached token is stale, usually rotated on the machine holding the credentials file. The agent asks for the current one and overwrites the cache. A named token (`name.secret`) answers the same way when its name has no secret on the Worker, so the recovery is the same question rather than a diagnosis. |
 | `delivered` is 1 and no banner | Almost always Chrome, Firefox, or Android, none of which can receive these. Otherwise check that the icon still exists on the Home Screen. |
 | The agent never offers | The skill did not trigger. Say "on my phone" or "via Kukuroo" and it will; `/kukuroo-setup` also confirms the plugin is installed and the endpoint reachable. |
 | A 404 HTML page | Wrong origin, or the Worker is not deployed there. |
