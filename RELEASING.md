@@ -111,10 +111,11 @@ npm i && npx wrangler dev --port 8787 --local
 - [ ] `POST /push/send` with no token and with a wrong token both 401.
 - [ ] `POST /push/send` with the right token returns `{"delivered":0,...}` on an empty KV.
       Zero is the honest answer here, not a failure.
-- [ ] A named token: `KUKUROO_SEND_TOKEN_CI` in `.dev.vars` accepts `Bearer ci.<value>` and
-      `Bearer CI.<value>`, and still accepts the bare `KUKUROO_SEND_TOKEN` beside it. A wrong secret,
-      an unknown name, and a name with no secret of its own are all 401 — **not** the 503 that names a
-      variable, which would report which names the Worker holds to anyone who asks.
+- [ ] A named token: `KUKUROO_SEND_TOKEN_CI` in `.dev.vars` accepts `Bearer KUKUROO_SEND_TOKEN_CI.<value>`.
+      A wrong secret, an unknown name, and a name with no secret of its own are all 401 — **not** the
+      503 that names a variable, which would report which names the Worker holds to anyone who asks. The
+      name is the secret's name verbatim: no case folding or hyphen mapping, and a bearer token with no
+      name (no `KUKUROO_SEND_TOKEN_` prefix before the dot) is 401, not a fallback.
 - [ ] `POST /push/subscribe` with no invite and with a wrong invite both 403.
 - [ ] Each of these is rejected before any fetch leaves the Worker, with an error naming the
       field: missing `navigate`, relative `navigate`, empty `title`, relative `icon`,

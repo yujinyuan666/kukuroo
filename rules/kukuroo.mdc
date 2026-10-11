@@ -53,9 +53,9 @@ curl -fsS -X POST "$KUKUROO_ORIGIN/push/send" \
 The response is `{"delivered":N,"removed":N,"failures":[]}`. **`"delivered":0` is a failure** — the
 request succeeded and nothing reached a phone, usually because no device is enrolled. Report it.
 
-`$KUKUROO_SEND_TOKEN` is one opaque string, and a deployment may issue one per sender. If it contains
-a dot, the part before the first dot is the token's name and the rest is the secret — send it exactly
-as it is. A `401` means the whole value is stale, named or not.
+`$KUKUROO_SEND_TOKEN` is one opaque string, a credential, and a deployment may issue one per sender.
+It is `<name>.<secret>`: the part before the first dot is the token's name — the Worker Secret's name,
+verbatim — and the rest is the secret; send it exactly as it is. A `401` means the whole value is stale.
 
 Four payload rules, each here because getting it wrong fails invisibly: the push service returns 201
 and WebKit discards the message with no error anywhere.

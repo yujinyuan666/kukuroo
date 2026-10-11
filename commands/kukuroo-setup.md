@@ -36,9 +36,9 @@ Both are in `kukuroo.credentials.json` on the machine the deployment was set up 
 the address is the custom domain in its `wrangler.jsonc` or the `workers.dev` URL the deploy printed.
 Say that once if they do not have the values to hand.
 
-That file holds the unnamed token. A deployment may also have named ones, each its own Worker Secret
-and never in that file: those are sent as `<name>.<token>`, so the value to paste is still one string
-and nothing above changes. If they have only a named token, it works with no unnamed token set.
+That file holds the send token, sent as `<name>.<token>` where `<name>` is the Worker Secret's name
+verbatim (e.g. `KUKUROO_SEND_TOKEN_CI.<token>`): the value to paste is one string, so nothing above
+changes. Each sender has its own token, each its own Worker Secret, never in that file.
 
 If they have not deployed a Worker at all yet, `npx kukuroo init my-push` is the whole of setup. Say
 that and stop, rather than walking them through it here.

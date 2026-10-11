@@ -31,27 +31,17 @@ export interface KukurooEnv {
   KUKUROO_VAPID_PUBLIC?: string;
 
   /**
-   * Worker Secret. The unnamed bearer token for `POST /push/send`, sent as
-   * `Authorization: Bearer <token>`.
-   *
-   * Optional, because a deployment may use named tokens instead -- and only
-   * named ones. Adding it back to a Worker that has only named tokens is the
-   * only way to make a bare, unnamed credential work there.
-   */
-  KUKUROO_SEND_TOKEN?: string;
-
-  /**
-   * Worker Secrets. Any number of further send tokens, one per name, where the
-   * credential is `Authorization: Bearer <name>.<secret>`: the name `ci` reads
-   * the secret `KUKUROO_SEND_TOKEN_CI`, and `mac-mini` reads
-   * `KUKUROO_SEND_TOKEN_MAC_MINI`.
+   * Worker Secrets. Every send token, one per name, where the credential is
+   * `Authorization: Bearer <name>.<secret>` and the name is the binding's name
+   * verbatim: the name `KUKUROO_SEND_TOKEN_CI` reads the secret
+   * `KUKUROO_SEND_TOKEN_CI`. There is no case folding or hyphen mapping; the
+   * caller writes the secret's name exactly as `wrangler secret put` saw it.
    *
    * They cannot be listed here the way the fixed bindings are, because the list
-   * is whatever the operator created with `wrangler secret put`. A name is one
-   * to 32 characters of `a-z`, `0-9` and interior `-`, matched without regard
-   * to case, and a name with no secret of its own answers 401 rather than the
-   * 503 above: naming the missing variable would report which names exist to
-   * whoever asks.
+   * is whatever the operator created with `wrangler secret put`. A name must
+   * start with the literal prefix `KUKUROO_SEND_TOKEN_` and a name with no
+   * secret of its own answers 401 rather than a 503 that names the variable:
+   * naming the missing binding would report which names exist to whoever asks.
    */
   // KUKUROO_SEND_TOKEN_<NAME>: string;
 

@@ -48,10 +48,11 @@ KUKUROO_SEND_TOKEN=...
   nice-to-have on top of a push service, and it does not get to add steps, flags, or files to
   everybody's setup to make its own life easier.
 - **The token may be a named one, and that changes nothing here.** A deployment can hold
-  several send tokens, one per sender, written as `<name>.<token>`; a plain token is still a
-  plain token. Either way the value is one opaque string in one variable, so the file, the
-  question, and the shell below are unaffected — and a 401 means the same thing for both,
-  that this machine's copy is stale.
+  several send tokens, one per sender, written as `<name>.<token>`, where `<name>` is the Worker
+  Secret's name verbatim (e.g. `KUKUROO_SEND_TOKEN_CI.<token>`); a plain token is still a plain
+  token. Either way the value is one opaque string in one variable, so the file, the question,
+  and the shell below are unaffected — and a 401 means the same thing for both, that this
+  machine's copy is stale.
 
 Being shell-sourceable is the whole design. The agent writes `$KUKUROO_SEND_TOKEN` and
 never learns its value:

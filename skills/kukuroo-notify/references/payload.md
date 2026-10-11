@@ -10,18 +10,17 @@ authorization: Bearer $KUKUROO_SEND_TOKEN
 content-type: application/json
 ```
 
-What `$KUKUROO_SEND_TOKEN` holds is one string, and it is either form:
+What `$KUKUROO_SEND_TOKEN` holds is one string, a credential:
 
 | The value | Reads the Worker Secret |
 |---|---|
-| `<token>` | `KUKUROO_SEND_TOKEN` |
-| `<name>.<token>` | `KUKUROO_SEND_TOKEN_<NAME>` — `ci.<secret>` reads `KUKUROO_SEND_TOKEN_CI` |
+| `<name>.<token>` | the secret named `<name>`, verbatim — `KUKUROO_SEND_TOKEN_CI.<secret>` reads `KUKUROO_SEND_TOKEN_CI` |
 
-A deployment may hold several named tokens, one per sender, so retiring one does not disturb
-the others. Named and unnamed tokens all reach every enrolled device; nothing about the
-payload below changes. Split the value at its **first** dot to see which you hold. An unknown
-name, a wrong secret, and a token that was deleted all answer the same `401`, because saying
-which is wrong would report which names the Worker has.
+A deployment may hold several tokens, one per sender, so retiring one does not disturb
+the others. All of them reach every enrolled device; nothing about the payload below changes.
+Split the value at its **first** dot to see which you hold. An unknown name, a wrong secret,
+and a token that was deleted all answer the same `401`, because saying which is wrong would
+report which names the Worker has.
 
 ```jsonc
 {
@@ -82,7 +81,7 @@ service accepts the message and it is never delivered. Keep `body` and `data` sm
 | 200 | `{"delivered":0,...}` | Request fine, nothing enrolled. Re-enroll: open the origin in Safari, Add to Home Screen, open from the icon. |
 | 400 | `{"error":"body must be JSON"}` | Malformed request body. |
 | 400 | `{"error":"notification.<field> ..."}` | Validation, and the message names the field and why. |
-| 401 | `{"error":"unauthorized"}` | Missing, wrong, or stale bearer token, in either form: the secret does not match, or the name in `<name>.<token>` has no secret of its own on the Worker. `kukuroo rotate send-token` replaces the unnamed one, and the env file needs the new value; a named one is replaced or removed with `wrangler secret put`/`delete` on its own variable. |
+| 401 | `{"error":"unauthorized"}` | Missing, wrong, or stale bearer token: the secret does not match, or the name in `<name>.<token>` has no secret of its own on the Worker. A token is replaced or removed with `wrangler secret put`/`delete` on its own variable, and the env file needs the new value. |
 | 403 | `{"error":"invalid invite code"}` | Only `/subscribe`. Enrollment, not sending. |
 | 405 | `{"error":"method not allowed"}` | `/send` is POST only. |
 | 503 | `{"error":"KUKUROO_... is not configured..."}` | A Worker Secret is missing. `npx kukuroo init --secrets`. |

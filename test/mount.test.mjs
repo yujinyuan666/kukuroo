@@ -51,8 +51,9 @@ const kv = fakeKV();
 const env = {
   KUKUROO_SUBS: kv,
   KUKUROO_VAPID_PRIVATE: JSON.stringify({ kty: "EC", crv: "P-256", d: vapidJwk.d, x: vapidJwk.x, y: vapidJwk.y }),
-  KUKUROO_SEND_TOKEN: "token-token-token",
   KUKUROO_INVITE_CODE: "invite-invite",
+  KUKUROO_SEND_TOKEN_CI: "ci-secret",
+  KUKUROO_SEND_TOKEN_MAC_MINI: "mac-secret",
 };
 
 const kukuroo = mountKukuroo({ prefix: "/push", standalone: true });
@@ -101,11 +102,7 @@ ok("send without a bearer token is 401",
 // means it never got that far. Nothing here reaches a push service, which
 // matters because the fan-out below counts on `pushed` being empty until it
 // runs and asserts the count once.
-const namedEnv = {
-  ...env,
-  KUKUROO_SEND_TOKEN_CI: "ci-secret",
-  KUKUROO_SEND_TOKEN_MAC_MINI: "mac-secret",
-};
+const namedEnv = env;
 const probe = async (authorization, against = namedEnv) => {
   const headers = authorization === null ? {} : { authorization: `Bearer ${authorization}` };
   const response = await kukuroo.handle(req("/push/send", { method: "POST", headers, body: "not json" }), against);
@@ -116,41 +113,42 @@ const probe = async (authorization, against = namedEnv) => {
 const authorized = ({ status, body }, label) =>
   ok(label, status === 400 && body.error === "body must be JSON");
 
-authorized(await probe("ci.ci-secret"), "a named token is accepted as name.secret");
-authorized(await probe("CI.ci-secret"), "the name in a credential is case-insensitive");
-authorized(await probe("mac-mini.mac-secret"), "a dashed name maps to underscores in the variable");
-authorized(await probe("token-token-token"), "the unnamed token still works beside named ones");
-authorized(await probe("ci.a.b.c", { ...env, KUKUROO_SEND_TOKEN_CI: "a.b.c" }),
+authorized(await probe("KUKUROO_SEND_TOKEN_CI.ci-secret"), "a named token is accepted as name.secret");
+ok("the name is verbatim, so a different case is a different name",
+  (await probe("kukuroo_send_token_ci.ci-secret")).status === 401);
+authorized(await probe("KUKUROO_SEND_TOKEN_MAC_MINI.mac-secret"), "a name with underscores reads its own secret");
+ok("a bare token with no dot is not a credential", (await probe("ci-secret")).status === 401);
+authorized(await probe("KUKUROO_SEND_TOKEN_CI.a.b.c", { ...env, KUKUROO_SEND_TOKEN_CI: "a.b.c" }),
   "only the first dot splits, so a secret may contain one");
 
 // A name whose secret is missing is 401 and says nothing: naming the variable
 // would let an anonymous caller enumerate the tokens this Worker holds.
 {
   const before = errors.length;
-  const missed = await probe("nope.ci-secret");
+  const missed = await probe("KUKUROO_SEND_TOKEN_NOPE.ci-secret");
   ok("an unknown name is 401, not a 503 naming it",
     missed.status === 401 && missed.body.error === "unauthorized");
   ok("and that miss logs nothing", errors.length === before);
 }
 ok("a wrong secret for a real name is 401",
-  (await probe("ci.wrong-secret")).status === 401);
-ok("an empty secret matches nothing", (await probe("ci.")).status === 401);
-// `__proto__` is a legal credential only as a whole value; as a name it must not
-// become a property key, or the lookup would read an object off the prototype.
-ok("a name that is not in the charset is treated as a whole value",
+  (await probe("KUKUROO_SEND_TOKEN_CI.wrong-secret")).status === 401);
+ok("an empty secret matches nothing", (await probe("KUKUROO_SEND_TOKEN_CI.")).status === 401);
+// `__proto__` and friends are not send-token names: without the exact prefix
+// they are no credential at all, so the bearer header is rejected outright.
+ok("a name outside the prefix is not a credential",
   (await probe("__proto__.token-token-token")).status === 401);
 
-// Names that *are* in the charset but also name members of Object.prototype.
-// They must resolve to the derived binding, never to the inherited property --
+// A binding-shaped name that is also a member of Object.prototype. The prefix
+// check and `Object.hasOwn` keep it on the binding, never the inherited member:
 // `env.constructor` is a function, and a lookup that reached it would compare a
 // secret against the Function constructor.
 {
-  authorized(await probe("constructor.s", { ...env, KUKUROO_SEND_TOKEN_CONSTRUCTOR: "s" }),
+  authorized(await probe("KUKUROO_SEND_TOKEN_CONSTRUCTOR.s", { ...env, KUKUROO_SEND_TOKEN_CONSTRUCTOR: "s" }),
     "a name that shadows an Object member reads its own secret");
-  authorized(await probe("toString.s", { ...env, KUKUROO_SEND_TOKEN_TOSTRING: "s" }),
+  authorized(await probe("KUKUROO_SEND_TOKEN_TOSTRING.s", { ...env, KUKUROO_SEND_TOKEN_TOSTRING: "s" }),
     "toString is an ordinary name too");
   ok("and the inherited property is not what was compared",
-    (await probe("constructor.Function", { ...env, KUKUROO_SEND_TOKEN_CONSTRUCTOR: "s" })).status === 401);
+    (await probe("KUKUROO_SEND_TOKEN_CONSTRUCTOR.Function", { ...env, KUKUROO_SEND_TOKEN_CONSTRUCTOR: "s" })).status === 401);
 }
 // The mirror image, and the one `Object.hasOwn` in `namedSendToken` exists for:
 // a *binding-shaped* key inherited from Object.prototype. `env` is a plain
@@ -164,7 +162,7 @@ ok("a name that is not in the charset is treated as a whole value",
   Object.prototype.KUKUROO_SEND_TOKEN_PWN = poisoned;
   try {
     ok("a polluted prototype does not authorize its own name",
-      (await probe("pwn." + poisoned)).status === 401);
+      (await probe("KUKUROO_SEND_TOKEN_PWN." + poisoned)).status === 401);
     // ...and the pollution is genuinely reachable by a plain read, so the test
     // above is asserting the guard rather than an unreachable branch.
     // eslint-disable-next-line no-proto
@@ -173,40 +171,24 @@ ok("a name that is not in the charset is treated as a whole value",
   } finally {
     delete Object.prototype.KUKUROO_SEND_TOKEN_PWN;
   }
-  authorized(await probe("ci.ci-secret"), "and a real token still works after that");
+  authorized(await probe("KUKUROO_SEND_TOKEN_CI.ci-secret"), "and a real token still works after that");
 }
-// The derivation is injective, or two names would reach one secret and a
-// retired token would still be live under a name nobody set.
+// A name is its binding verbatim, so there is nothing to collide: `_A_B` and
+// `_AB` are two different secrets and each reads only itself.
 {
   const both = { ...env, KUKUROO_SEND_TOKEN_A_B: "dashed", KUKUROO_SEND_TOKEN_AB: "plain" };
-  authorized(await probe("a-b.dashed", both), "a-b does not reach the variable of ab");
-  authorized(await probe("ab.plain", both), "ab does not reach the variable of a-b");
+  authorized(await probe("KUKUROO_SEND_TOKEN_A_B.dashed", both), "A_B reads only its own secret");
+  authorized(await probe("KUKUROO_SEND_TOKEN_AB.plain", both), "AB reads only its own secret");
 }
 
-// Named tokens stand on their own: a Worker with no unnamed token serves them.
+// A bearer token that predates named tokens — one with no name, or a name that
+// is not a binding — is simply not a credential any more. There is no unnamed
+// form to fall back on, so a 401 is the honest answer, not a migration.
 {
-  const { KUKUROO_SEND_TOKEN: _omitted, ...namedOnly } = namedEnv;
-  authorized(await probe("ci.ci-secret", namedOnly), "named tokens work with no unnamed token set");
   const before = errors.length;
-  const missed = await probe("nope.ci-secret", namedOnly);
-  ok("a named miss is still 401 with no unnamed token to name",
-    missed.status === 401 && errors.length === before);
-  // The unnamed form keeps the 503 that names the variable -- the one shape
-  // where there is exactly one binding the caller could have meant.
-  const bare = await kukuroo.handle(req("/push/send", { method: "POST", body: "not json" }), namedOnly);
-  const bareBody = await bare.json();
-  ok("an unnamed credential with no unnamed token still 503s, naming it",
-    bare.status === 503 && bareBody.error.includes("KUKUROO_SEND_TOKEN"));
-}
-
-// A token issued before named tokens existed is matched as a whole value, even
-// when its own text contains a dot whose prefix is a legal name. Tokens are
-// random in practice; a hand-written one must not change meaning here.
-{
-  const dotted = { ...env, KUKUROO_SEND_TOKEN: "abc.def" };
-  authorized(await probe("abc.def", dotted), "a dotted unnamed token still matches whole");
-  ok("and the whole-value clause is not a wildcard",
-    (await probe("abc.wrong", dotted)).status === 401);
+  ok("a pre-named bare token is 401", (await probe("legacy-token")).status === 401);
+  ok("a pre-named dotted token is 401", (await probe("abc.def")).status === 401);
+  ok("and neither is logged as a missing binding", errors.length === before);
 }
 
 // ---- the fan-out, push service stubbed -------------------------------------
@@ -214,9 +196,9 @@ const pushed = [];
 globalThis.fetch = async (url, init) => { pushed.push({ url, init }); return new Response(null, { status: 201 }); };
 const sendResponse = await kukuroo.handle(req("/push/send", {
   method: "POST",
-  headers: { authorization: "Bearer token-token-token" },
+  headers: { authorization: "Bearer KUKUROO_SEND_TOKEN_CI.ci-secret" },
   body: JSON.stringify({ notification: { title: "hi", navigate: "https://push.example.com/" } }),
-}), env);
+}), namedEnv);
 const sendResult = await sendResponse.json();
 ok("send fans out to the stored subscription", sendResult.delivered === 1 && pushed.length === 1);
 ok("the push POST carries VAPID auth and aes128gcm",
@@ -230,16 +212,16 @@ ok("the k= parameter is the sender's uncompressed public key",
 // authorized but did not fan out would satisfy every probe above.
 const namedSend = await kukuroo.handle(req("/push/send", {
   method: "POST",
-  headers: { authorization: "Bearer ci.ci-secret" },
+  headers: { authorization: "Bearer KUKUROO_SEND_TOKEN_MAC_MINI.mac-secret" },
   body: JSON.stringify({ notification: { title: "hi", navigate: "https://push.example.com/" } }),
 }), namedEnv);
-ok("a named token sends for real", (await namedSend.json()).delivered === 1 && pushed.length === 2);
+ok("a second named token sends for real", (await namedSend.json()).delivered === 1 && pushed.length === 2);
 
 const badSubject = await kukuroo.handle(req("/push/send", {
   method: "POST",
-  headers: { authorization: "Bearer token-token-token" },
+  headers: { authorization: "Bearer KUKUROO_SEND_TOKEN_CI.ci-secret" },
   body: JSON.stringify({ notification: { title: "hi", navigate: "https://push.example.com/" } }),
-}), { ...env, KUKUROO_VAPID_SUBJECT: "saiday@example.com" });
+}), { ...namedEnv, KUKUROO_VAPID_SUBJECT: "saiday@example.com" });
 // 503, not 400: the subject is an operator's environment variable, and a caller
 // holding the send token cannot fix it by rewriting its notification.
 ok("a bare-email VAPID subject is refused by name, once, before the fan-out",
@@ -306,7 +288,7 @@ ok("even a 403 carries the CORS header, so the page can read the error",
 
 const corsSend = await kukuroo.handle(req("/push/send", {
   method: "POST",
-  headers: { origin: SITE, authorization: "Bearer token-token-token" },
+  headers: { origin: SITE, authorization: "Bearer KUKUROO_SEND_TOKEN_CI.ci-secret" },
   body: JSON.stringify({ notification: { title: "hi", navigate: "https://push.example.com/" } }),
 }), corsEnv);
 ok("send never gets a CORS header, even for an allowed origin",
@@ -337,14 +319,14 @@ ok("key material that cannot decrypt is refused at enrollment, not at send time"
 // ---- caller fields that go straight into headers -----------------------------
 const badTtl = await kukuroo.handle(req("/push/send", {
   method: "POST",
-  headers: { authorization: "Bearer token-token-token" },
+  headers: { authorization: "Bearer KUKUROO_SEND_TOKEN_CI.ci-secret" },
   body: JSON.stringify({ ttl: 1e21, notification: { title: "hi", navigate: "https://push.example.com/" } }),
 }), env);
 ok("a malformed ttl is one 400, not a 200 carrying delivered: 0",
   badTtl.status === 400 && (await badTtl.json()).error.includes("ttl"));
 const badTopic = await kukuroo.handle(req("/push/send", {
   method: "POST",
-  headers: { authorization: "Bearer token-token-token" },
+  headers: { authorization: "Bearer KUKUROO_SEND_TOKEN_CI.ci-secret" },
   body: JSON.stringify({ topic: "x".repeat(33), notification: { title: "hi", navigate: "https://push.example.com/" } }),
 }), env);
 ok("a malformed topic is refused the same way", badTopic.status === 400);
@@ -354,7 +336,7 @@ ok("a malformed topic is refused the same way", badTopic.status === 400);
 // so these are not smaller mistakes than a missing title.
 const badBody = await kukuroo.handle(req("/push/send", {
   method: "POST",
-  headers: { authorization: "Bearer token-token-token" },
+  headers: { authorization: "Bearer KUKUROO_SEND_TOKEN_CI.ci-secret" },
   body: JSON.stringify({ notification: { title: "hi", navigate: "https://push.example.com/", body: 42 } }),
 }), env);
 ok("a numeric notification.body is a 400 rather than a silent non-display",
@@ -366,14 +348,14 @@ ok("a numeric notification.body is a 400 rather than a silent non-display",
 const slashOrigin = { ...env, KUKUROO_NAVIGATE_ORIGIN: "https://push.example.com/" };
 const sameOrigin = await kukuroo.handle(req("/push/send", {
   method: "POST",
-  headers: { authorization: "Bearer token-token-token" },
+  headers: { authorization: "Bearer KUKUROO_SEND_TOKEN_CI.ci-secret" },
   body: JSON.stringify({ notification: { title: "hi", navigate: "https://push.example.com/" } }),
 }), slashOrigin);
 ok("a trailing slash on KUKUROO_NAVIGATE_ORIGIN still matches its own origin",
   sameOrigin.status === 200);
 const offOrigin = await kukuroo.handle(req("/push/send", {
   method: "POST",
-  headers: { authorization: "Bearer token-token-token" },
+  headers: { authorization: "Bearer KUKUROO_SEND_TOKEN_CI.ci-secret" },
   body: JSON.stringify({ notification: { title: "hi", navigate: "https://elsewhere.example/" } }),
 }), slashOrigin);
 ok("and a genuinely off-origin navigate is still refused", offOrigin.status === 400);
@@ -399,7 +381,7 @@ ok("a missing KV binding returns a 503 naming the binding",
 
 const noKVSend = await kukuroo.handle(req("/push/send", {
   method: "POST",
-  headers: { authorization: "Bearer token-token-token" },
+  headers: { authorization: "Bearer KUKUROO_SEND_TOKEN_CI.ci-secret" },
   body: JSON.stringify({ notification: { title: "hi", navigate: "https://push.example.com/" } }),
 }), envNoKV);
 ok("send says the same thing rather than blaming the caller's body",
@@ -409,7 +391,7 @@ const envNoVapid = { ...env };
 delete envNoVapid.KUKUROO_VAPID_PRIVATE;
 const noVapidSend = await kukuroo.handle(req("/push/send", {
   method: "POST",
-  headers: { authorization: "Bearer token-token-token" },
+  headers: { authorization: "Bearer KUKUROO_SEND_TOKEN_CI.ci-secret" },
   body: JSON.stringify({ notification: { title: "hi", navigate: "https://push.example.com/" } }),
 }), envNoVapid);
 ok("a missing VAPID key is a 503 on send that names the variable",
@@ -609,7 +591,7 @@ for (const [label, page] of [["gated", gatedPage], ["open", openPage]]) {
     routes.handle(
       new Request(url + "/push/send", {
         method: "POST",
-        headers: { authorization: "Bearer token-token-token" },
+        headers: { authorization: "Bearer KUKUROO_SEND_TOKEN_CI.ci-secret" },
         body: JSON.stringify({ notification: { title: "hi", navigate } }),
       }),
       { ...env, ...over },

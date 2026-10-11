@@ -40,8 +40,8 @@ serve your own UI and add its origin to `KUKUROO_ALLOWED_ORIGINS`.
 
 Every question also has a flag, including `--no-deploy` and `--resume` for setting things up
 before touching your Cloudflare account, and `rotate` for the send token and the invite code:
-[`npx kukuroo init --help`](scripts/init.mjs). `rotate` handles the unnamed send token; a named
-one is added and retired with `wrangler secret`, [below](#more-than-one-token).
+[`npx kukuroo init --help`](scripts/init.mjs). `rotate` handles the invite code; a send token is
+added and retired with `wrangler secret`, [below](#more-than-one-token).
 
 ### Mounting it in a Worker you already run
 
@@ -125,9 +125,9 @@ curl -X POST https://push.example.com/push/send \
 
 ### More than one token
 
-`KUKUROO_SEND_TOKEN` is one credential, shared by everything that sends. When several things
-send — a laptop, a CI job, a cron box — each can have its own, so retiring one does not mean
-reissuing all of them. A named token is one more Worker Secret, and the sender says which:
+A deployment may hold any number of send tokens, one per sender — a laptop, a CI job, a cron
+box — so retiring one does not mean reissuing all of them. A token is one Worker Secret, and
+the sender says which:
 
 ```sh
 # A value only base64url of random bytes produces: no dot, no whitespace.
@@ -135,32 +135,30 @@ node -e 'console.log(require("crypto").randomBytes(32).toString("base64url"))'
 # Paste it when prompted. This deploys immediately; no `wrangler deploy` needed.
 printf '%s' '<value>' | npx wrangler secret put KUKUROO_SEND_TOKEN_CI
 
-# Then that sender holds the single string `ci.<value>`:
+# Then that sender holds the single string `KUKUROO_SEND_TOKEN_CI.<value>`:
 curl -X POST https://push.example.com/push/send \
-  -H "authorization: Bearer ci.<value>" \
+  -H "authorization: Bearer KUKUROO_SEND_TOKEN_CI.<value>" \
   -d '{"notification":{"title":"Deploy finished","navigate":"https://push.example.com/"}}'
 ```
 
-The credential is `Bearer <name>.<secret>`, and the name `ci` reads the secret
-`KUKUROO_SEND_TOKEN_CI`. A name is 1–32 characters of `a-z`, `0-9` and interior `-`, matched
-case-insensitively; dashes become underscores in the binding, so `mac-mini` reads
-`KUKUROO_SEND_TOKEN_MAC_MINI`. Only the first dot splits, so a secret may contain one.
+The credential is `Bearer <name>.<secret>`, and the name is the Worker Secret's name,
+verbatim: `KUKUROO_SEND_TOKEN_CI` reads the secret `KUKUROO_SEND_TOKEN_CI`. There is no case
+folding or hyphen mapping — the caller writes the secret's name exactly as `wrangler secret put`
+saw it. Only the first dot splits, so a secret may contain one.
 
 - **Every token reaches every device.** Naming separates credentials, not subscriptions.
-- **The unnamed token keeps working**, so adding named ones breaks nothing. Send it bare, as
-  above; `KUKUROO_SEND_TOKEN` and its named siblings are checked independently.
 - **An unknown name is a 401, not a 503.** Naming the missing secret would report which names
-  exist to whoever asked. A 401 on a named token means either half is wrong.
+  exist to whoever asked. A 401 on a send means either half of the credential is wrong.
 - **Retiring one** is `npx wrangler secret delete KUKUROO_SEND_TOKEN_CI`. It asks for
   confirmation first; there is no `--yes`. Every sender still presenting it gets a 401.
-- **What you hold is one string.** A sender that already stores `$KUKUROO_SEND_TOKEN` keeps
-  working unchanged — put `ci.<value>` in that variable and the config stays one line.
+- **What you hold is one string.** A sender stores `KUKUROO_SEND_TOKEN_CI.<value>` in one
+  variable and sends it as one header; nothing about the config has to change to add a sender.
 
 Counts and sizes are Cloudflare's: each name is one more variable on the Worker (64 per Worker
-on the free plan, 128 on paid) and values are capped at 5 KB. The name is not the variable
-name: a secret called `KUKUROO_SEND_TOKEN_CI` is what the name `ci` reads, and nothing else.
-`wrangler secret put` and `secret delete` both create and deploy a new version immediately, so
-an added token is live at once and needs no redeploy.
+on the free plan, 128 on paid) and values are capped at 5 KB. A name must start with the literal
+prefix `KUKUROO_SEND_TOKEN_`, so it can only ever address a send-token binding. `wrangler secret
+put` and `secret delete` both create and deploy a new version immediately, so an added token is
+live at once and needs no redeploy.
 
 ## Alternatives
 
